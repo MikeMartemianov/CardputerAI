@@ -30,9 +30,11 @@ MAX_CONVERSATION_HISTORY = 5 # Keep last 5 user/model pairs + current user messa
 # This tells the AI how to behave (in English, as per request)
 SYSTEM_PROMPT = {
     "role": "user",
-    "parts": [{"text":
-               "You are a helpful and friendly assistant designed for children aged 10-12, running on very small device M5 CardPuter. Use simple language and explain things clearly. Answer in one short sentense."}]
+    "parts": [{"text": "You are a helpful and friendly assistant running on small M3 Cardputer device, designed for children aged 10-12. Use simple language and explain things clearly. Keep your responses to one or two short sentences."}]
 }
+
+# Variable to hold the current user input being typed
+current_user_input = "" 
 
 # --- Functions ---
 
@@ -50,7 +52,6 @@ def connect_wifi():
         print("WiFi: Missing 'wifi_ssid' or 'wifi_pass' in config!")
         ov.error("No WiFi credentials!")
         time.sleep(3) # Display error for a few seconds
-        ov.close()
         return False
 
     if nic.isconnected():
@@ -83,7 +84,6 @@ def connect_wifi():
         print("WiFi: Failed to connect.")
         ov.error("WiFi connection failed!")
         time.sleep(3) # Display error for a few seconds
-        ov.close()
         return False
 
 def wrap_text(text, width):
@@ -92,6 +92,10 @@ def wrap_text(text, width):
     current_line = ""
     # Ensure text is treated as a string before splitting
     text_str = str(text) 
+    # Handle the case of an empty string
+    if not text_str:
+        return [""]
+
     for word in text_str.split(' '):
         # Handle cases where a single word might be longer than the line width
         word_width = d.get_total_width(word)
@@ -108,24 +112,31 @@ def wrap_text(text, width):
             current_line = "" # Reset current_line after handling long word
             continue
 
-        if d.get_total_width(current_line + (' ' if current_line else '') + word) <= width:
-            current_line += (' ' if current_line else '') + word
+        # Check if adding the next word (with a space if needed) fits
+        next_line_candidate = current_line + (' ' if current_line else '') + word
+        if d.get_total_width(next_line_candidate) <= width:
+            current_line = next_line_candidate
         else:
             if current_line: lines.append(current_line.strip())
-            current_line = word
+            current_line = word # Start a new line with the current word
     if current_line: lines.append(current_line.strip())
     return lines
 
 def draw_ui():
     """Renders the chat interface: history and hints."""
+    global current_user_input # Declare access to global variable
     d.rect(0, 0, W, H, d.palette[2], fill=True) # Clear screen
     # Shortened name for UI
     d.text(f"Model: Flash-Lite", 2, 2, d.palette[9]) 
     d.line(0, 12, W, 12, d.palette[8])
 
-    y = H - 4
+    # Draw input prompt line
+    input_line_y = H - 10
+    d.line(0, input_line_y - 2, W, input_line_y - 2, d.palette[8])
+    d.text(f"Input: {current_user_input}", 2, input_line_y, d.palette[10]) # Display current input
+
+    y = input_line_y - 12 # Start drawing history above the input line
     # Draw history from bottom up, excluding the SYSTEM_PROMPT if it's there
-    # The actual conversation history starts after the SYSTEM_PROMPT
     display_conversation = [entry for entry in conversation if entry != SYSTEM_PROMPT]
 
     for entry in reversed(display_conversation): 
@@ -139,9 +150,9 @@ def draw_ui():
             lines = wrap_text(prefix + entry['parts'][0]['text'], W - 4)
             for line in reversed(lines):
                 y -= 10
-                if y < 14: break
+                if y < 14: break # Stop if approaching model name/line
                 d.text(line, 2, y, color)
-            if y < 14: break
+            if y < 14: break # Stop if approaching model name/line
             
     d.show()
 
@@ -153,7 +164,6 @@ def call_gemini_api(api_key):
         if not connect_wifi():
             ov.error("API: No network!")
             time.sleep(3) # Display error for a few seconds
-            ov.close()
             return
 
     print("API: Starting request.")
@@ -203,7 +213,6 @@ def call_gemini_api(api_key):
             print(f"API: {err_msg}")
             ov.error(err_msg)
             time.sleep(3) # Display error for a few seconds
-            ov.close()
             conversation.pop() # Remove the empty bot response entry
             r.close()
             return
@@ -226,12 +235,10 @@ def call_gemini_api(api_key):
                 print("API: Unexpected response structure.")
                 ov.error("Bad API Response")
                 time.sleep(3) # Display error for a few seconds
-                ov.close()
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"API: Error parsing full JSON response: {e}, Content: {r.content.decode('utf-8')[:100]}")
             ov.error("JSON Parse Error")
             time.sleep(3) # Display error for a few seconds
-            ov.close()
         
         r.close() # Close the response connection
         print("API: Request finished.")
@@ -239,11 +246,11 @@ def call_gemini_api(api_key):
         print(f"API: Request failed with exception: {e}")
         ov.error(f"Request Fail: {e}")
         time.sleep(3) # Display error for a few seconds
-        ov.close()
         if conversation: conversation.pop() # Remove the empty bot response entry
 
 def main():
     """Main application loop."""
+    global current_user_input # Declare access to global variable
     print("App: Starting.")
     d.rect(0,0,1,1,d.palette[2]); d.show()
 
@@ -253,49 +260,46 @@ def main():
         print("App: Error - gemini_api_key not found in config!")
         ov.error("Set gemini_api_key in config!")
         time.sleep(3) # Display error for a few seconds
-        ov.close()
         return
 
     # Attempt to connect to WiFi at startup
     if not connect_wifi():
         print("App: Initial WiFi connection failed. Continuing without network access.")
     
-    draw_ui()
-
-    should_prompt_next = True # Flag to control when to open text_entry
+    draw_ui() # Draw initial UI with empty input line
 
     while True:
-        if should_prompt_next:
-            current_prompt = ov.text_entry("")
-            should_prompt_next = False # Reset flag after attempting to prompt
-
-            if current_prompt is None: # User pressed ESC within text_entry
-                print("App: User cancelled text entry. Now waiting for manual ENT or ESC.")
-                # should_prompt_next remains False, so it won't auto-open next loop iteration
-            elif current_prompt: # User entered text and pressed ENT
-                print(f"App: User input received: '{current_prompt}'")
-                # Add user message to conversation *before* calling API
-                # The actual system prompt is added only to the API payload, not the display conversation
-                conversation.append({"role": "user", "parts": [{"text": current_prompt}]})
-                draw_ui() # Redraw UI with user's message
-                call_gemini_api(api_key)
-                should_prompt_next = True # Prompt again after bot response
-            else: # User pressed ENT but input was empty
-                print("App: Empty message entered. Prompting again immediately.")
-                should_prompt_next = True # Stay in prompt mode for next loop iteration
-        
-        # Always check for system-wide keys (like ESC for exiting the app)
+        # Check for key presses
         for k in kb.get_new_keys():
             if k == "ESC":
                 print("App: ESC pressed, exiting.")
                 raise SystemExit
-            # If the app is not currently in auto-prompt mode (user cancelled the last one)
-            # and ENT is pressed, trigger the prompt for the next iteration.
-            if k == "ENT" and not should_prompt_next: 
-                print("App: ENT pressed (outside auto-prompt), triggering prompt.")
-                should_prompt_next = True # Force prompt next iteration
-        
+            elif k == "ENT":
+                if current_user_input.strip(): # Only send if input is not empty
+                    print(f"App: User input received: '{current_user_input}'")
+                    conversation.append({"role": "user", "parts": [{"text": current_user_input}]})
+                    current_user_input = "" # Clear input after sending
+                    draw_ui() # Redraw UI with new message and empty input
+                    call_gemini_api(api_key)
+                else:
+                    print("App: Empty message entered (ENT pressed).")
+            elif k == "BS": # Backspace
+                current_user_input = current_user_input[:-1] # Remove last character
+                draw_ui() # Redraw to show deletion
+            elif len(k) == 1: # Assume single character keys are for input
+                # Check if adding the character exceeds display width
+                if d.get_total_width(current_user_input + k) <= (W - 4): # Allow 4px margin
+                    current_user_input += k
+                    draw_ui() # Redraw to show new character
+                else:
+                    print(f"App: Input line full, cannot add '{k}'")
+            elif k == "SPC": # Space key
+                if d.get_total_width(current_user_input + ' ') <= (W - 4):
+                    current_user_input += ' '
+                    draw_ui()
+                else:
+                    print("App: Input line full, cannot add space.")
+
         time.sleep_ms(20) # Small delay to prevent busy-looping
 
 main()
-
